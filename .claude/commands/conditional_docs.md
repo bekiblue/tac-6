@@ -29,3 +29,11 @@ This prompt helps you determine what documentation you should read based on the 
 - adws/README.md
   - Conditions:
     - When you're operating in the `adws/` directory
+
+- app_docs/feature-0ead5f67-csv-export.md
+  - Conditions:
+    - When working with CSV export functionality
+    - When modifying table or query results download features
+    - When implementing file download features in the client
+    - When troubleshooting export-related issues
+    - When adding new export formats or endpoints
