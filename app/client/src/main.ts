@@ -1,7 +1,8 @@
 import './style.css'
 import { api } from './api/client'
 
-// Global state
+// Global state for current query results (used for export)
+let currentResults: { columns: string[]; results: Record<string, any>[] } | null = null;
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
@@ -182,13 +183,19 @@ async function loadDatabaseSchema() {
 
 // Display query results
 function displayResults(response: QueryResponse, query: string) {
-  
+
   const resultsSection = document.getElementById('results-section') as HTMLElement;
   const sqlDisplay = document.getElementById('sql-display') as HTMLDivElement;
   const resultsContainer = document.getElementById('results-container') as HTMLDivElement;
-  
+
+  // Store current results for export
+  currentResults = {
+    columns: response.columns,
+    results: response.results
+  };
+
   resultsSection.style.display = 'block';
-  
+
   // Display natural language query and SQL
   sqlDisplay.innerHTML = `
     <div class="query-display">
@@ -198,10 +205,11 @@ function displayResults(response: QueryResponse, query: string) {
       <strong>SQL:</strong> <code>${response.sql}</code>
     </div>
   `;
-  
+
   // Display results table
   if (response.error) {
     resultsContainer.innerHTML = `<div class="error-message">${response.error}</div>`;
+    currentResults = null; // Clear results on error
   } else if (response.results.length === 0) {
     resultsContainer.innerHTML = '<p>No results found.</p>';
   } else {
@@ -209,13 +217,48 @@ function displayResults(response: QueryResponse, query: string) {
     resultsContainer.innerHTML = '';
     resultsContainer.appendChild(table);
   }
-  
-  // Initialize toggle button
-  const toggleButton = document.getElementById('toggle-results') as HTMLButtonElement;
-  toggleButton.addEventListener('click', () => {
+
+  // Update the results header with download button
+  const resultsHeader = resultsSection.querySelector('.results-header') as HTMLElement;
+
+  // Remove existing actions container if present
+  const existingActions = resultsHeader.querySelector('.results-actions');
+  if (existingActions) {
+    existingActions.remove();
+  }
+
+  // Create actions container with download and toggle buttons
+  const actionsContainer = document.createElement('div');
+  actionsContainer.className = 'results-actions';
+
+  // Create download button
+  const downloadButton = document.createElement('button');
+  downloadButton.className = 'download-results-button';
+  downloadButton.innerHTML = '&#x2B73;'; // Down arrow symbol
+  downloadButton.title = 'Download results as CSV';
+  downloadButton.onclick = () => downloadResults();
+
+  // Get or create toggle button
+  let toggleButton = resultsHeader.querySelector('#toggle-results') as HTMLButtonElement;
+  if (!toggleButton) {
+    toggleButton = document.createElement('button');
+    toggleButton.id = 'toggle-results';
+    toggleButton.className = 'toggle-button';
+    toggleButton.textContent = 'Hide';
+  } else {
+    // Remove from current position
+    toggleButton.remove();
+  }
+
+  actionsContainer.appendChild(downloadButton);
+  actionsContainer.appendChild(toggleButton);
+  resultsHeader.appendChild(actionsContainer);
+
+  // Initialize toggle button click handler
+  toggleButton.onclick = () => {
     resultsContainer.style.display = resultsContainer.style.display === 'none' ? 'block' : 'none';
     toggleButton.textContent = resultsContainer.style.display === 'none' ? 'Show' : 'Hide';
-  });
+  };
 }
 
 // Create results table
@@ -285,14 +328,27 @@ function displayTables(tables: TableSchema[]) {
     tableLeft.appendChild(tableName);
     tableLeft.appendChild(tableInfo);
     
+    // Create actions container for download and remove buttons
+    const actionsContainer = document.createElement('div');
+    actionsContainer.className = 'table-actions';
+
+    const downloadButton = document.createElement('button');
+    downloadButton.className = 'download-table-button';
+    downloadButton.innerHTML = '&#x2B73;'; // Down arrow symbol
+    downloadButton.title = 'Download table as CSV';
+    downloadButton.onclick = () => downloadTable(table.name);
+
     const removeButton = document.createElement('button');
     removeButton.className = 'remove-table-button';
     removeButton.innerHTML = '&times;';
     removeButton.title = 'Remove table';
     removeButton.onclick = () => removeTable(table.name);
-    
+
+    actionsContainer.appendChild(downloadButton);
+    actionsContainer.appendChild(removeButton);
+
     tableHeader.appendChild(tableLeft);
-    tableHeader.appendChild(removeButton);
+    tableHeader.appendChild(actionsContainer);
     
     // Columns section
     const tableColumns = document.createElement('div');
@@ -459,7 +515,7 @@ function getTypeEmoji(type: string): string {
 async function loadSampleData(sampleType: string) {
   try {
     let filename: string;
-    
+
     if (sampleType === 'users') {
       filename = 'users.json';
     } else if (sampleType === 'products') {
@@ -469,19 +525,113 @@ async function loadSampleData(sampleType: string) {
     } else {
       throw new Error(`Unknown sample type: ${sampleType}`);
     }
-    
+
     const response = await fetch(`/sample-data/${filename}`);
-    
+
     if (!response.ok) {
       throw new Error('Failed to load sample data');
     }
-    
+
     const blob = await response.blob();
     const file = new File([blob], filename, { type: blob.type });
-    
+
     // Upload the file
     await handleFileUpload(file);
   } catch (error) {
     displayError(error instanceof Error ? error.message : 'Failed to load sample data');
   }
+}
+
+// Download table as CSV
+async function downloadTable(tableName: string) {
+  // Find the download button and show loading state
+  const tablesList = document.getElementById('tables-list') as HTMLDivElement;
+  const buttons = Array.from(tablesList.querySelectorAll('.download-table-button')) as HTMLButtonElement[];
+
+  const targetButton = buttons.find((btn) => {
+    const tableItem = btn.closest('.table-item');
+    const nameElement = tableItem?.querySelector('.table-name');
+    return nameElement?.textContent === tableName;
+  });
+
+  if (targetButton) {
+    targetButton.disabled = true;
+    targetButton.innerHTML = '<span class="loading-secondary" style="width: 16px; height: 16px;"></span>';
+  }
+
+  try {
+    const response = await fetch(`/api/export/table/${encodeURIComponent(tableName)}`);
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to export table');
+    }
+
+    const blob = await response.blob();
+    triggerDownload(blob, `${tableName}.csv`);
+  } catch (error) {
+    displayError(error instanceof Error ? error.message : 'Failed to download table');
+  } finally {
+    if (targetButton) {
+      targetButton.disabled = false;
+      targetButton.innerHTML = '&#x2B73;';
+    }
+  }
+}
+
+// Download query results as CSV
+async function downloadResults() {
+  if (!currentResults) {
+    displayError('No results to download');
+    return;
+  }
+
+  // Find the download button and show loading state
+  const resultsSection = document.getElementById('results-section') as HTMLElement;
+  const downloadButton = resultsSection.querySelector('.download-results-button') as HTMLButtonElement;
+
+  if (downloadButton) {
+    downloadButton.disabled = true;
+    downloadButton.innerHTML = '<span class="loading-secondary" style="width: 16px; height: 16px;"></span>';
+  }
+
+  try {
+    const response = await fetch('/api/export/results', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        columns: currentResults.columns,
+        results: currentResults.results
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to export results');
+    }
+
+    const blob = await response.blob();
+    triggerDownload(blob, 'query_results.csv');
+  } catch (error) {
+    displayError(error instanceof Error ? error.message : 'Failed to download results');
+  } finally {
+    if (downloadButton) {
+      downloadButton.disabled = false;
+      downloadButton.innerHTML = '&#x2B73;';
+    }
+  }
+}
+
+// Helper function to trigger browser download
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
